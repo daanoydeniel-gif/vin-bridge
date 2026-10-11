@@ -1,0 +1,1 @@
+Place GGUF models here. Recommended: SmolLM2-360M-Instruct-Q4_K_M.gguf\nServer: http://127.0.0.1:8080\n

@@ -1,0 +1,571 @@
+import time
+import json
+import os
+
+
+class CognitiveResult:
+
+    def __init__(
+        self,
+        text,
+        intent,
+        memories=None,
+        experiences=None,
+        decision="RESPOND",
+        plan=None,
+        confidence=0.0,
+        reason="",
+        goal="",
+        mode="conversation",
+        priority="normal",
+        response_strategy="answer"
+    ):
+        self.text = text
+        self.intent = intent
+        self.memories = memories or []
+        self.experiences = experiences or []
+        self.decision = decision
+        self.plan = plan or []
+        self.confidence = confidence
+        self.reason = reason
+        self.goal = goal
+        self.mode = mode
+        self.priority = priority
+        self.response_strategy = response_strategy
+        self.time = time.time()
+
+    def to_dict(self):
+        return {
+            "text": self.text,
+            "intent": self.intent,
+            "memories": self.memories,
+            "experiences": self.experiences,
+            "decision": self.decision,
+            "plan": self.plan,
+            "confidence": self.confidence,
+            "reason": self.reason,
+            "goal": self.goal,
+            "mode": self.mode,
+            "priority": self.priority,
+            "response_strategy": self.response_strategy,
+            "time": self.time
+        }
+
+
+class CognitiveCore:
+
+    def __init__(
+        self,
+        memory,
+        router,
+        planner,
+        model=None,
+        learning=None,
+        self_model=None,
+        adaptive_learning=None
+    ):
+        self.memory = memory
+        self.router = router
+        self.planner = planner
+        self.model = model
+        self.learning = learning
+        self.self_model = self_model
+        self.adaptive_learning = adaptive_learning
+
+        self.last_result = None
+
+        self.conversation_file = os.path.join(
+            os.path.dirname(os.path.dirname(__file__)),
+            "memory",
+            "conversation.json"
+        )
+
+        os.makedirs(
+            os.path.dirname(self.conversation_file),
+            exist_ok=True
+        )
+
+        self.conversation = self._load_conversation()
+
+
+    def understand(self, text):
+
+        text = str(text).strip()
+
+        if not text:
+            return {
+                "text": "",
+                "intent": "EMPTY"
+            }
+
+        return {
+            "text": text,
+            "intent": self.router.route(text)
+        }
+
+    def extract_goal(self, text, intent):
+
+        lower = text.casefold().strip()
+
+        if intent == "MEMORY_SAVE":
+
+            prefixes = (
+                "remember that ",
+                "remember ",
+                "don't forget ",
+                "do not forget ",
+                "save this "
+            )
+
+            for prefix in prefixes:
+
+                if lower.startswith(prefix):
+                    return text[len(prefix):].strip()
+
+        if intent in (
+            "PLAN",
+            "ANDROID_ACTION",
+            "MEMORY_QUERY"
+        ):
+            return text
+
+        return ""
+
+    def detect_priority(self, text):
+
+        x = text.casefold()
+
+        if any(
+            word in x
+            for word in (
+                "urgent",
+                "emergency",
+                "asap",
+                "immediately",
+                "right now"
+            )
+        ):
+            return "urgent"
+
+        if any(
+            word in x
+            for word in (
+                "important",
+                "quickly",
+                "need this"
+            )
+        ):
+            return "high"
+
+        return "normal"
+
+    def determine_mode(self, intent):
+
+        modes = {
+            "MEMORY_SAVE": "memory",
+            "MEMORY_QUERY": "memory",
+            "ANDROID_ACTION": "action",
+            "PLAN": "planning",
+            "CHAT": "conversation",
+            "EMPTY": "idle"
+        }
+
+        return modes.get(
+            intent,
+            "conversation"
+        )
+
+    def _load_conversation(self):
+        try:
+            with open(
+                self.conversation_file,
+                "r",
+                encoding="utf-8"
+            ) as f:
+                data = json.load(f)
+
+            if isinstance(data, list):
+                return data[-50:]
+
+        except Exception:
+            pass
+
+        return []
+
+    def _save_conversation(self):
+        try:
+            temp = self.conversation_file + ".tmp"
+
+            with open(
+                temp,
+                "w",
+                encoding="utf-8"
+            ) as f:
+                json.dump(
+                    self.conversation[-50:],
+                    f,
+                    indent=2,
+                    ensure_ascii=False
+                )
+
+            os.replace(
+                temp,
+                self.conversation_file
+            )
+
+        except Exception:
+            pass
+
+    def gather_conversation_context(self, limit=5):
+        if not self.conversation:
+            return []
+
+        return self.conversation[-limit:]
+
+    def gather_context(self, text):
+
+        words = [
+            word.strip(
+                ".,!?;:\"'()[]{}"
+            )
+            for word in text.casefold().split()
+        ]
+
+        memories = []
+
+        for word in words:
+
+            if len(word) < 4:
+                continue
+
+            results = self.memory.search(
+                word,
+                3
+            )
+
+            for result in results:
+
+                if result not in memories:
+                    memories.append(result)
+
+            if len(memories) >= 5:
+                break
+
+        return memories[:5]
+
+    def gather_experience(self, text):
+
+        if not self.adaptive_learning:
+            return []
+
+        try:
+            matches = self.adaptive_learning.recall(
+                text,
+                limit=3
+            )
+
+            return matches
+
+        except Exception:
+            return []
+
+    def reason(
+        self,
+        understood,
+        memories,
+        experiences,
+        goal,
+        mode,
+        priority,
+        conversation_context=None
+    ):
+
+        intent = understood["intent"]
+
+        if (
+            intent == "CHAT"
+            and isinstance(conversation_context, list)
+            and conversation_context
+        ):
+            return {
+                "decision": "RESPOND",
+                "confidence": 0.86,
+                "reason": (
+                    "Recent conversation context is available "
+                    "and can guide the current response."
+                )
+            }
+
+        if intent == "EMPTY":
+
+            return {
+                "decision": "RESPOND",
+                "confidence": 1.0,
+                "reason": "No request was provided."
+            }
+
+        if intent == "MEMORY_SAVE":
+
+            return {
+                "decision": "MEMORY",
+                "confidence": 0.99,
+                "reason": "The user wants information stored for future use."
+            }
+
+        if intent == "MEMORY_QUERY":
+
+            return {
+                "decision": "MEMORY",
+                "confidence": 0.99,
+                "reason": "The user wants Vin to retrieve stored information."
+            }
+
+        if intent == "ANDROID_ACTION":
+
+            confidence = 0.95
+
+            if experiences:
+                confidence = min(
+                    0.99,
+                    confidence + 0.02
+                )
+
+            return {
+                "decision": "ACTION",
+                "confidence": confidence,
+                "reason": (
+                    "The request may require an external tool or "
+                    "Android capability."
+                )
+            }
+
+        if intent == "PLAN":
+
+            return {
+                "decision": "PLAN",
+                "confidence": 0.96,
+                "reason": "The request contains a goal that should be broken into steps."
+            }
+
+        if experiences:
+
+            best = experiences[0]
+            similarity = best.get(
+                "similarity",
+                0.0
+            )
+
+            if similarity >= 0.50:
+
+                return {
+                    "decision": "RESPOND",
+                    "confidence": min(
+                        0.95,
+                        0.80 + similarity * 0.15
+                    ),
+                    "reason": (
+                        "A similar verified experience was found "
+                        "and can guide the response."
+                    )
+                }
+
+        return {
+            "decision": "RESPOND",
+            "confidence": 0.80,
+            "reason": (
+                "The request is conversational and does not "
+                "currently require a tool or plan."
+            )
+        }
+
+    def choose_response_strategy(
+        self,
+        intent,
+        decision,
+        memories,
+        experiences,
+        priority
+    ):
+
+        if intent == "EMPTY":
+            return "ask_clarification"
+
+        if intent == "MEMORY_QUERY":
+
+            if memories:
+                return "answer_from_memory"
+
+            return "ask_clarification"
+
+        if intent == "MEMORY_SAVE":
+            return "confirm_memory"
+
+        if intent == "ANDROID_ACTION":
+            return "perform_action"
+
+        if intent == "PLAN":
+            return "present_plan"
+
+        if experiences:
+            best = experiences[0]
+
+            if best.get("similarity", 0.0) >= 0.50:
+                return "adaptive_response"
+
+        if priority == "urgent":
+            return "direct_response"
+
+        if intent == "CHAT":
+            return "conversational_response"
+
+        return "direct_response"
+
+    def make_plan(self, text, decision):
+
+        if decision != "PLAN":
+            return []
+
+        return self.planner.plan(text)
+
+    def process(self, text):
+
+        start = time.time()
+
+        understood = self.understand(text)
+
+        intent = understood["intent"]
+
+        goal = self.extract_goal(
+            understood["text"],
+            intent
+        )
+
+        mode = self.determine_mode(
+            intent
+        )
+
+        priority = self.detect_priority(
+            understood["text"]
+        )
+
+        memories = self.gather_context(
+            understood["text"]
+        )
+
+        experiences = self.gather_experience(
+            understood["text"]
+        )
+
+        conversation_context = (
+            self.gather_conversation_context(
+                limit=5
+            )
+        )
+
+        reasoning = self.reason(
+            understood,
+            memories,
+            experiences,
+            goal,
+            mode,
+            priority,
+            conversation_context
+        )
+
+        strategy = self.choose_response_strategy(
+            intent,
+            reasoning["decision"],
+            memories,
+            experiences,
+            priority
+        )
+
+        plan = self.make_plan(
+            understood["text"],
+            reasoning["decision"]
+        )
+
+        result = CognitiveResult(
+            text=understood["text"],
+            intent=intent,
+            memories=memories,
+            experiences=experiences,
+            decision=reasoning["decision"],
+            plan=plan,
+            confidence=reasoning["confidence"],
+            reason=reasoning["reason"],
+            goal=goal,
+            mode=mode,
+            priority=priority,
+            response_strategy=strategy
+        )
+
+        self.last_result = result
+
+        self.conversation.append({
+            "user": understood["text"],
+            "intent": intent,
+            "decision": reasoning["decision"],
+            "goal": goal,
+            "mode": mode,
+            "priority": priority,
+            "response_strategy": strategy,
+            "experience_matches": len(experiences),
+            "time": time.time(),
+            "processing_time": time.time() - start
+        })
+
+        self.conversation = self.conversation[-50:]
+
+        self._save_conversation()
+
+        return result
+
+    def status(self):
+
+        return {
+            "online": True,
+            "conversation_items": len(
+                self.conversation
+            ),
+            "adaptive_learning": (
+                self.adaptive_learning is not None
+            ),
+            "experience_matches": (
+                len(
+                    self.last_result.experiences
+                )
+                if self.last_result
+                else 0
+            ),
+            "last_intent": (
+                self.last_result.intent
+                if self.last_result
+                else None
+            ),
+            "last_decision": (
+                self.last_result.decision
+                if self.last_result
+                else None
+            ),
+            "last_goal": (
+                self.last_result.goal
+                if self.last_result
+                else None
+            ),
+            "last_mode": (
+                self.last_result.mode
+                if self.last_result
+                else None
+            ),
+            "last_priority": (
+                self.last_result.priority
+                if self.last_result
+                else None
+            ),
+            "last_response_strategy": (
+                self.last_result.response_strategy
+                if self.last_result
+                else None
+            )
+        }

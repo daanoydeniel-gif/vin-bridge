@@ -1,0 +1,166 @@
+#!/usr/bin/env bash
+
+# ============================================================
+# VIN CONTROLLED DEVELOPMENT RUNNER
+# Project: VIN09_3/VIN09_2
+# Scope: THIS PROJECT DIRECTORY ONLY
+# ============================================================
+
+set -u
+
+PROJECT="$(cd "$(dirname "$0")" && pwd)"
+cd "$PROJECT" || exit 1
+
+BACKUP_DIR="$PROJECT/.vin_backups"
+mkdir -p "$BACKUP_DIR"
+
+say() {
+    printf '\n[VIN-DEV] %s\n' "$1"
+}
+
+backup() {
+    local stamp
+    stamp="$(date '+%Y%m%d_%H%M%S')"
+    local dest="$BACKUP_DIR/$stamp"
+
+    mkdir -p "$dest"
+
+    cp -a \
+        main.py \
+        brain \
+        memory \
+        security \
+        tools \
+        "$dest/" 2>/dev/null || true
+
+    say "Backup created: $dest"
+}
+
+status() {
+    say "Project"
+    echo "Path: $PROJECT"
+    echo
+
+    say "Python"
+    python --version
+
+    say "Files"
+    find . -maxdepth 2 -type f \
+        ! -path './.vin_backups/*' \
+        | sort
+
+    echo
+
+    say "Git status (if available)"
+    if command -v git >/dev/null 2>&1 && [ -d .git ]; then
+        git status --short
+    else
+        echo "No Git repository."
+    fi
+}
+
+compile() {
+    say "Compiling Vin..."
+
+    python -m py_compile \
+        main.py \
+        brain/*.py \
+        brain/reasoning/*.py \
+        tools/*.py \
+        security/*.py \
+        memory/*.py
+
+    if [ $? -eq 0 ]; then
+        say "COMPILE PASSED"
+    else
+        say "COMPILE FAILED"
+        return 1
+    fi
+}
+
+test() {
+    say "Running isolated Vin self-test..."
+    PYTHONPATH="$PROJECT" python tests/self_test.py || return 1
+    PYTHONPATH="$PROJECT" python tests/android_bridge_test.py
+}
+
+backup_then_compile() {
+    backup
+    compile
+}
+
+run_vin() {
+    say "Starting Vin..."
+    python main.py
+}
+
+help_menu() {
+    cat <<'EOF'
+
+============================================================
+                 VIN DEVELOPMENT RUNNER
+============================================================
+
+Usage:
+
+  ./vin-dev status
+      Show Vin project status and files.
+
+  ./vin-dev compile
+      Compile-check Vin's Python modules.
+
+  ./vin-dev test
+      Run the isolated Vin self-test suite.
+
+  ./vin-dev check
+      Create a backup, then compile Vin.
+
+  ./vin-dev run
+      Start Vin normally.
+
+  ./vin-dev backup
+      Create a safety backup.
+
+  ./vin-dev help
+      Show this menu.
+
+============================================================
+SAFE SCOPE
+============================================================
+
+This runner operates only inside:
+
+~/VIN09/VIN09_3/VIN09_2
+
+It does not intentionally execute arbitrary shell commands,
+does not use root, and does not modify files outside Vin's
+project directory.
+
+============================================================
+
+EOF
+}
+
+case "${1:-help}" in
+    status)
+        status
+        ;;
+    compile)
+        compile
+        ;;
+    test)
+        test
+        ;;
+    check)
+        backup_then_compile
+        ;;
+    run)
+        run_vin
+        ;;
+    backup)
+        backup
+        ;;
+    help|*)
+        help_menu
+        ;;
+esac

@@ -1,4 +1,35 @@
-node_modules
-.env
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+
+# VIN09 private data — keep on device
+memory/conversation.json
+memory/topic.json
+memory/memory.json
+memory/goal_state.json
+memory/tasks.json
+security/permissions.json
+learning/knowledge.json
+learning/experience.json
+
+# Backups
+.vin_backups/
+*.backup
+*.bak
+
+# OS
 .DS_Store
-npm-debug.log*
+Thumbs.db
+.idea/
+.vscode/
+
+# Environment
+.env
+.env.local
+*.key
+*.pem
